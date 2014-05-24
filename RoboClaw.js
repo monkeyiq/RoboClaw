@@ -45,11 +45,22 @@ var CMD_TURN_RIGHT      = 10;
 var CMD_TURN_LEFT       = 11;
 var CMD_DRIVE_FORWARD_OR_BACKWARDS = 12;
 var CMD_TURN_LEFT_OR_RIGHT         = 13;
+var CMD_READ_ENC_QUAD_M1           = 16;
+var CMD_READ_ENC_QUAD_M2           = 17;
+var CMD_READ_ENC_SPEED_M1          = 18;
+var CMD_READ_ENC_SPEED_M2          = 19;
+var CMD_RESET_ENC_COUNTS           = 20;
 var CMD_GETVERSION                 = 21;
 var CMD_READ_MAIN_BATTERY_VOLTAGE  = 24;
 var CMD_READ_LOGIC_BATTERY_VOLTAGE = 25;
 var CMD_SET_MIN_LOGIC_VOLTAGE_LEVEL = 26;
 var CMD_SET_MAX_LOGIC_VOLTAGE_LEVEL = 27;
+var CMD_SET_PID_M1   = 28;
+var CMD_SET_PID_M2   = 29;
+// var CMD_READ_PID_M1  = 30;
+// var CMD_READ_PID_M2  = 31;
+var CMD_PID_DRIVE_M1 = 35;
+var CMD_PID_DRIVE_M2 = 36;
 var CMD_READ_MOTOR_CURRENTS         = 49;
 var CMD_READ_MOTOR1_PID_AND_QPPS    = 55;
 var CMD_READ_MOTOR2_PID_AND_QPPS    = 56;
@@ -115,7 +126,7 @@ function RoboClaw( uartport, roboclawaddr, cfgbaudrate, callback )
     self.tasks = [];
 
     sp.on("data", function (data) {
-	console.log("serial.on(DATA) rmeth:" + self.robomethid + " _data: " + data);
+	console.log("serial.on(DATA) rmeth:" + self.robomethid ); // + " _data: " + data);
 
 	var cbdata = { rc: self, data: data };
 	if( self.robomethid == CMD_GETVERSION )
@@ -183,6 +194,33 @@ function RoboClaw( uartport, roboclawaddr, cfgbaudrate, callback )
 	    cbdata.vmin = b.readUInt16BE( 0 ) / 10;
 	    cbdata.vmax = b.readUInt16BE( 2 ) / 10;
 	}
+	if( self.robomethid == CMD_READ_ENC_QUAD_M1 
+	    || self.robomethid == CMD_READ_ENC_QUAD_M2 )
+	{
+	    var b = self.onData_getRunningBuffer( data );
+	    console.log("CMD_READ_ENC_QUAD b.len:" + b.length );
+	    if( b.length < 6 )
+		return;
+ 	    cbdata.count  = b.readUInt32BE( 0 );
+ 	    cbdata.value  = cbdata.count;
+	    cbdata.status = b[4];
+	    cbdata.forwards = (cbdata.status & (1<<1)) == 0;
+	    cbdata.backwars = !cbdata.forwards;
+	    cbdata.underflow = (cbdata.status & (1<<0));
+	    cbdata.overflow  = (cbdata.status & (1<<2));
+	}
+	if( self.robomethid == CMD_READ_ENC_SPEED_M1
+	    || self.robomethid == CMD_READ_ENC_SPEED_M2 )
+	{
+	    var b = self.onData_getRunningBuffer( data );
+	    console.log("b.len:" + b.length );
+	    if( b.length < 6 )
+		return;
+	    cbdata.count  = b.readUInt32BE( 0 );
+	    cbdata.forwards = b[4] > 0;
+	    cbdata.backwars = !cbdata.forwards;
+	}
+
 	self.dataCallback( cbdata );
 	self.runningTask = 0;
 	self.dataCallback = emptyCallback;
@@ -295,6 +333,14 @@ RoboClaw.prototype.writeAddChecksum = function( data, databytes )
     self.tasks.push( { b: b, callback: emptyCallback, robomethid: -1  } );
     self.tryRunNextTask();
 
+}
+RoboClaw.prototype.write1AddChecksum = function( cmd ) 
+{
+    var bidx = 0;
+    var b = new Buffer(30);
+    b[bidx++] = this.roboclawaddr;
+    b[bidx++] = cmd;
+    this.writeAddChecksum( b, bidx );
 }
 RoboClaw.prototype.write2AddChecksum = function( cmd, b1 ) 
 {
@@ -595,6 +641,109 @@ RoboClaw.prototype.writeSettingsToEEPROM = function( callback )
     this.dispatchMethod2bReturnsData( this.roboclawaddr, 
 				      CMD_WRITE_SETTINGS_TO_EEPROM, 
 				      callback );
+}
+
+
+RoboClaw.prototype.readEncQuadM1 = function( callback ) 
+{
+    this.dispatchMethod2bReturnsData( this.roboclawaddr, 
+				      CMD_READ_ENC_QUAD_M1, 
+				      callback );
+}
+
+RoboClaw.prototype.readEncQuadM2 = function( callback ) 
+{
+    this.dispatchMethod2bReturnsData( this.roboclawaddr, 
+				      CMD_READ_ENC_QUAD_M2, 
+				      callback );
+}
+
+RoboClaw.prototype.readEncSpeedM1 = function( callback ) 
+{
+    this.dispatchMethod2bReturnsData( this.roboclawaddr, 
+				      CMD_READ_ENC_SPEED_M1, 
+				      callback );
+}
+
+RoboClaw.prototype.readEncSpeedM2 = function( callback ) 
+{
+    this.dispatchMethod2bReturnsData( this.roboclawaddr, 
+				      CMD_READ_ENC_SPEED_M2, 
+				      callback );
+}
+
+RoboClaw.prototype.resetEncCounts = function( callback ) 
+{
+    this.write1AddChecksum( CMD_RESET_ENC_COUNTS );
+}
+
+
+RoboClaw.prototype.setPIDMx = function( cmd, P, I, D, QPPS ) 
+{
+    if( typeof P === 'undefined' || P == 0 )
+	P = 0x00010000;
+    if( typeof I === 'undefined' || I == 0 )
+	I = 0x00008000;
+    if( typeof D === 'undefined' || D == 0 )
+	D = 0x00004000;
+    if( typeof QPPS === 'undefined' || QPPS == 0 )
+	QPPS = 44000;
+
+    var bidx = 0;
+    var b = new Buffer(60);
+    b[bidx++] = this.roboclawaddr;
+    b[bidx++] = cmd;
+    b.writeUInt32BE( D,    bidx );    bidx+=4;
+    b.writeUInt32BE( P,    bidx );    bidx+=4;
+    b.writeUInt32BE( I,    bidx );    bidx+=4;
+    b.writeUInt32BE( QPPS, bidx );    bidx+=4;
+    this.writeAddChecksum( b, bidx );
+}
+
+RoboClaw.prototype.setPIDM1 = function( P, I, D, QPPS ) 
+{
+    this.setPIDMx( CMD_SET_PID_M1, P, I, D, QPPS );
+}
+RoboClaw.prototype.setPIDM2 = function( P, I, D, QPPS ) 
+{
+    this.setPIDMx( CMD_SET_PID_M2, P, I, D, QPPS );
+}
+
+RoboClaw.prototype.setQPPSM1 = function( P, I, D, QPPS ) 
+{
+    this.setPIDMx( CMD_SET_PID_M1, 0,0,0, QPPS );
+}
+RoboClaw.prototype.setQPPSM2 = function( P, I, D, QPPS ) 
+{
+    this.setPIDMx( CMD_SET_PID_M2, 0,0,0, QPPS );
+}
+
+
+RoboClaw.prototype.setPIDDriveMx = function( cmd, qspeed ) 
+{
+    if( typeof qspeed === 'undefined' || qspeed == 0 )
+	qspeed = 0;
+    if( !qspeed )
+    {
+	return;
+    }
+
+    var bidx = 0;
+    var b = new Buffer(60);
+    b[bidx++] = this.roboclawaddr;
+    b[bidx++] = cmd;
+    b.writeUInt32BE( qspeed, bidx ); 
+    bidx+=4;
+    this.writeAddChecksum( b, bidx );
+}
+
+RoboClaw.prototype.setPIDDriveM1 = function( qspeed ) 
+{
+    this.setPIDDriveMx( CMD_PID_DRIVE_M1, qspeed );
+}
+RoboClaw.prototype.setPIDDriveM2 = function( qspeed ) 
+{
+    this.setPIDDriveMx( CMD_PID_DRIVE_M2, qspeed );
 }
 
 
